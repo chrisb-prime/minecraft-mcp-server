@@ -134,12 +134,17 @@ test('implicit digging approach never falls back to destructive navigation', asy
 
 test('implicit placement approach uses safe settings but intentional place remains enabled', async t => {
   const { bot, block, call } = setup();
-  bot.blockAt.callsFake(position => position.equals(new Vec3(4, 64, 0)) ? null : block);
+  let placed = false;
+  bot.blockAt.callsFake(position => position.equals(new Vec3(4, 64, 0))
+    ? { ...block, name: placed ? 'dirt' : 'air', type: placed ? 2 : 0, stateId: placed ? 2 : 0 }
+    : { ...block, position, boundingBox: 'block' });
+  bot.placeBlock.callsFake(async () => { placed = true; });
   bot.canSeeBlock.returns(false);
   bot.pathfinder.goto.callsFake(async () => {
     t.false(bot.pathfinder.movements.canDig);
     t.false(bot.pathfinder.movements.allow1by1towers);
     t.deepEqual(bot.pathfinder.movements.scafoldingBlocks, []);
+    bot.canSeeBlock.returns(true);
   });
   t.falsy((await call('place-block')).isError);
   t.true(bot.pathfinder.goto.called);
@@ -149,7 +154,9 @@ test('implicit placement approach uses safe settings but intentional place remai
 
 test('placement fails on unreachable approach without placing or digging', async t => {
   const { bot, block, call } = setup();
-  bot.blockAt.callsFake(position => position.equals(new Vec3(4, 64, 0)) ? null : block);
+  bot.blockAt.callsFake(position => position.equals(new Vec3(4, 64, 0))
+    ? { ...block, name: 'air', type: 0, stateId: 0 }
+    : { ...block, position, boundingBox: 'block' });
   bot.canSeeBlock.returns(false);
   bot.pathfinder.goto.rejects(new Error('No path'));
   t.true((await call('place-block')).isError);

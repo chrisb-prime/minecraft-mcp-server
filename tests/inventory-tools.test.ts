@@ -189,6 +189,30 @@ function setupDrop(name = 'cobblestone', stackSize = 64, count = stackSize) {
   return { bot, item, call, setItems: (value: typeof items) => { items = value; } };
 }
 
+test('equip-item prefers exact fence over an earlier gate and preserves unique fuzzy/stack selection', async t => {
+  const gate = { name: 'oak_fence_gate', type: 1 };
+  const fence = { name: 'oak_fence', type: 2 };
+  const secondFence = { name: 'oak_fence', type: 2 };
+  let items = [gate, fence, secondFence];
+  const bot = { inventory: { items: () => items }, equip: sinon.stub().resolves() };
+  const tool = sinon.stub();
+  const factory = new ToolFactory({ tool } as unknown as McpServer, {
+    checkConnectionAndReconnect: sinon.stub().resolves({ connected: true })
+  } as unknown as BotConnection);
+  registerInventoryTools(factory, () => bot as unknown as mineflayer.Bot);
+  const call = (itemName: string) => tool.getCalls().find(call => call.args[0] === 'equip-item')!.args[3]({ itemName }) as Promise<ReturnType<ToolFactory['createResponse']>>;
+  t.falsy((await call(' OAK_FENCE ')).isError);
+  t.true(bot.equip.calledOnceWithExactly(fence, 'hand'));
+  t.true((await call('fence')).isError);
+  t.true(bot.equip.calledOnce);
+  t.regex((await call('oak')).content[0].text, /oak_fence, oak_fence_gate; use an exact item name/);
+  items = [fence, secondFence];
+  t.falsy((await call('fence')).isError);
+  t.true(bot.equip.lastCall.calledWithExactly(fence, 'hand'));
+  bot.equip.rejects(new Error('Native equip refused'));
+  t.regex((await call('oak_fence')).content[0].text, /Native equip refused/);
+});
+
 test('drop-item clears a full 64-item stack in one native call', async t => {
   const { bot, item, call } = setupDrop();
   const result = await call(64, ' COBBLESTONE ');

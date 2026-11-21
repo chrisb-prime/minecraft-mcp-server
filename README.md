@@ -150,8 +150,111 @@ These tools do not automatically move, alter game rules or select a different ta
 - `find-blocks` - Find one or more nearby blocks of a specific type
 - `interact-block` - Right-click the visible block at `x`, `y`, `z` within normal reach; use `sleep` for beds
 
+Local `place-block` can natively replace a single snow layer, fern, short grass or
+dead bush in the same explicit call, without digging first. It still rejects
+solids, thicker snow, liquids and other plants/fixtures (including sugar cane,
+flowers and torches); empty collision shapes alone do not imply replaceability.
+Hold a block item or a plantable item. Ordinary seed/crop planting is preserved:
+`wheat_seeds` produces `wheat`, `beetroot_seeds` produces `beetroots`, carrot/potato
+produce `carrots`/`potatoes`, melon/pumpkin seeds produce stems, torchflower seeds
+and pitcher pods produce their crops. Cocoa beans, sweet/glow berries and bamboo
+are also checked against their native planted block names. Planting still uses
+explicit placement and native support rules (for example, wheat above farmland);
+it does not automatically harvest, till soil or replant. Bucket placements,
+same-type replacement and snow-layer stacking remain unsupported. Native support,
+reach and server rules still apply. Safe approach refreshes the target/reference,
+and success requires the intended cell to contain the held block or its mapped
+planted block afterward.
+A native failure is an MCP error reporting the observed target; it does not
+automatically retry other faces after possible partial effects.
+
+Local `equip-item` prefers an exact name (so `oak_fence` never loses to an earlier
+`oak_fence_gate` when a fence is present). Without an exact match, a substring is
+accepted only if it resolves to one distinct item name; ambiguous names return an
+MCP error listing sorted candidates. Multiple stacks of the same name retain
+inventory-order selection.
+
+### Storage (local connector)
+- `container-status` - Inspect a supported ordinary chest or hopper at explicit `x`, `y`, `z`; JSON block type, slot count (27/54/5), empty slots and per-slot items
+- `deposit-container` - Deposit exact `itemName` and positive integer `count` into a supported chest/hopper at explicit `x`, `y`, `z`
+- `withdraw-container` - Withdraw exact `itemName` and positive integer `count` from a supported chest/hopper at explicit `x`, `y`, `z`
+- `chest-status` - Inspect the normal chest at explicit `x`, `y`, `z`; JSON slot count (27/54), empty slots and per-slot item names/counts/stack sizes
+- `deposit-chest` - Deposit exact `itemName` and positive integer `count` from inventory at explicit `x`, `y`, `z`
+- `withdraw-chest` - Withdraw exact `itemName` and positive integer `count` into inventory at explicit `x`, `y`, `z`
+
+The generic tools support only normal single/double chests and ordinary hoppers.
+The three legacy chest names remain chest-only compatibility tools using the same
+implementation and operation lock. No barrels, ender/trapped chests, minecarts or
+other containers are enabled. Storage uses the actual native `openContainer`
+window: either double-chest half opens its combined contents; a hopper has five
+storage slots and 36 player-inventory slots. Quantities may span multiple stacks.
+Stock and compatible-stack/empty-slot capacity are checked before any transfer.
+For example, `deposit-chest` with `x: 319, y: 64, z: -199`,
+`itemName: "oak_log", count: 64` requests exactly 64 logs, never a clamped amount.
+Custom item variants are not merged into incompatible stacks.
+
+These tools may approach safely without digging, scaffolding or building towers;
+normal visibility/reach restrictions still apply. Blocked or server-denied opening
+fails after 5 seconds. A pending native opening stays locked until it settles or
+the bot reconnects; a late window is closed without transferring. Existing windows
+and occupied cursors are rejected. Opened windows are closed after inspection or
+transfer, including failures. Native transfer failures/timeouts and unexpected slot
+changes are MCP errors with observed source removal, destination gain, remaining
+storage contents and cursor contents before closing; partial effects are not rolled
+back. Closing with cursor-held items may cause server-side return/drop behavior,
+so inspect inventory and ground items after a partial failure. Do not concurrently
+edit storage/player inventory during a transfer. Support is limited to ordinary
+chests and hoppers; there is no general container automation.
+These local tools are not part of upstream
+[yuniko-software/minecraft-mcp-server#275](https://github.com/yuniko-software/minecraft-mcp-server/pull/275),
+whose baseline is already merged into this fork.
+
+Hoppers, and chests connected to them, can move items automatically while open. Inspection and remaining-content
+results are snapshots, not persistent balances. Transfers additionally observe
+storage-slot updates during each native call, refuse unexpected/concurrent changes,
+and check both player inventory and storage transitions; equal final balance
+deltas alone are not completion proof. Errors report `nativeCompleted` (quantities
+whose native calls returned), `verifiedTransferred` (steps passing checks),
+`concurrentUpdate` and observed balance deltas. Those counters do not attribute
+unknown automated/player changes or imply a rollback. Generic success includes
+`transferred`, `nativeCompleted`, `remainingStorage`, `snapshotOnly: true` and a
+confirmation caveat; a successful deposit does not guarantee items remain in the
+hopper afterward. If automation races a transfer, stop and inspect/reconcile before
+retrying; disabling the hopper externally may be necessary. The tools never
+disable automation themselves or repeatedly drain/refill a container.
+
 ### Furnace
-- `smelt-item` - Smelt items using a furnace-like block
+- `smelt-item` - Load a batch into a furnace, smoker or blast furnace and collect output repeatedly until the loaded input is exhausted
+- `retrieve-furnace-output` - Retrieve the currently cooked output at `x`, `y`, `z`, without supplying more input/fuel or waiting for further cooking
+- `furnace-status` - Inspect input/fuel/output names and counts, burn fraction and cooking progress at `x`, `y`, `z` (`null` when progress properties are unavailable)
+
+`smelt-item` takes `inputItem`, `inputCount` (default 1), `fuelItem`, `fuelCount`
+(default 1), `takeOutput` (default true) and `timeoutMs` (default 60000, maximum
+300000). It already supports loading more than one input; collection now drains
+the **whole loaded batch**, rather than stopping after the first cooked item.
+It counts actual retrieved items instead of assuming every recipe produces one
+output per input. Completion requires empty input/output and a short slot-update
+settling period. Counts remain limited to the selected inventory stack; responses
+explicitly distinguish loaded and requested amounts.
+
+Start a batch only with empty input and output slots. Pre-existing input is rejected
+(even if the same type) to avoid mixing batches; retrieve pre-existing output
+explicitly first. Compatible existing fuel may remain, but additional fuel must fit
+the slot. Do not share the furnace with another player during collection.
+
+Set `takeOutput: false` to load items for background cooking, close the window and
+return immediately without claiming they have cooked. Later use `furnace-status`
+and `retrieve-furnace-output`; retrieval takes only the output available at that
+moment, so repeat it as cooking progresses. Example: load 8 `raw_iron` with 1
+`coal` in a furnace, or 8 `beef` with 1 `coal` in a smoker.
+
+Timeouts (including insufficient fuel or unsupported recipes), inventory-capacity
+problems, closed windows and native transfer failures return **MCP errors** with
+collected amounts and remaining slot contents. Already transferred items are not
+rolled back; remaining input may continue cooking after the window closes. Keep
+inventory room for output (a full output stack is reserved while more input is
+cooking, to avoid Mineflayer dropping overflow). Native transfer timeouts remain
+in effect in addition to the collection deadline. No game rules are changed.
 
 ### Entity Interaction
 - `find-entity` - Find the nearest entity of a specific type, including its entity ID
@@ -164,6 +267,30 @@ an item, open a container or activate a block. They report a **sent request**, n
 guaranteed server-side result; inspect the world or `status` afterward. Local checks
 use vanilla reach (4.5 blocks for blocks, 3 for entities; 5 in creative) and do not
 override server rules. Mounting may still be rejected by the server; timeout is an error.
+
+### Running a local build on Windows
+
+Install with `npm ci`, build with `npm run build`, then point the MCP client at the
+absolute path to `dist\main.js` using Node instead of downloading via npx:
+
+```json
+{
+  "mcpServers": {
+    "minecraft": {
+      "command": "cmd.exe",
+      "args": [
+        "/d", "/s", "/c",
+        "node \"C:\\path\\to\\minecraft-mcp-server\\dist\\main.js\" --host localhost --port CURRENT_LAN_PORT --username Kit"
+      ]
+    }
+  }
+}
+```
+
+Replace the example path and `CURRENT_LAN_PORT` with the port displayed by the
+currently open LAN world (it can change). Before applying this configuration, pause
+any sessions using the old connector and disable it so only one Kit connection runs.
+Building and mocked tests do not require a Minecraft connection.
 
 ### Communication
 - `send-chat` - Send a chat message in-game

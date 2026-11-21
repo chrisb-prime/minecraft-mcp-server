@@ -5,14 +5,38 @@ const { goals } = pathfinderPkg;
 import { Vec3 } from 'vec3';
 import minecraftData from 'minecraft-data';
 import { ToolFactory } from '../tool-factory.js';
-import { log } from '../logger.js';
 import { coerceCoordinates } from './coordinate-utils.js';
 import { safeGoto } from '../safe-navigation.js';
 import type { Item } from 'prismarine-item';
 import { DigApproachGoal, hasReachableDigFace } from '../digging-geometry.js';
+import type { Block } from 'prismarine-block';
+import { closestPoint, eyePosition } from './interaction-utils.js';
 
 type FaceDirection = 'up' | 'down' | 'north' | 'south' | 'east' | 'west';
 const MAX_FIND_BLOCKS_COUNT = 256;
+const REPLACEABLE_PLANTS = new Set(['fern', 'short_grass', 'dead_bush']);
+const AIR_BLOCKS = new Set(['air', 'cave_air', 'void_air']);
+// Native placement handles these items; their planted block names differ from
+// inventory names. Registry block data alone is not an item-placement mapping.
+const PLANTING_BLOCKS: Record<string, readonly string[]> = {
+  wheat_seeds: ['wheat'],
+  beetroot_seeds: ['beetroots'],
+  carrot: ['carrots'],
+  potato: ['potatoes'],
+  melon_seeds: ['melon_stem'],
+  pumpkin_seeds: ['pumpkin_stem'],
+  torchflower_seeds: ['torchflower_crop'],
+  pitcher_pod: ['pitcher_crop'],
+  cocoa_beans: ['cocoa'],
+  sweet_berries: ['sweet_berry_bush'],
+  glow_berries: ['cave_vines'],
+  bamboo: ['bamboo_sapling', 'bamboo']
+};
+
+function canReplaceForPlacement(block: Block): boolean {
+  return AIR_BLOCKS.has(block.name) || REPLACEABLE_PLANTS.has(block.name) ||
+    (block.name === 'snow' && Number(block.getProperties().layers) === 1);
+}
 
 interface FaceOption {
   direction: string;
@@ -43,9 +67,16 @@ export function registerBlockTools(factory: ToolFactory, getBot: () => mineflaye
 
       const blockAtPos = bot.blockAt(placePos);
 
-      if (blockAtPos && blockAtPos.name !== 'air') {
-        return factory.createResponse(`There's already a block (${blockAtPos.name}) at (${x}, ${y}, ${z})`);
-      }
+      if (!blockAtPos) throw new Error('Placement target is not loaded');
+      if (!canReplaceForPlacement(blockAtPos)) throw new Error(`There's already a nonreplaceable block (${blockAtPos.name}) at (${x}, ${y}, ${z})`);
+      const originalState = blockAtPos.stateId;
+      const originalType = blockAtPos.type;
+      const heldName = bot.heldItem?.name;
+      if (!heldName) throw new Error('Hold a block item or plantable item before placing');
+      const expectedNames = (PLANTING_BLOCKS[heldName] ?? [heldName])
+        .filter(name => bot.registry.blocksByName[name] && !['water', 'lava'].includes(name));
+      if (!expectedNames.length) throw new Error('Hold a block item or supported plantable item before placing; liquid/bucket placements are not supported');
+      if (expectedNames.includes(blockAtPos.name)) throw new Error('Same-type replacement or snow-layer stacking is not supported');
 
       const possibleFaces: FaceOption[] = [
         { direction: 'down', vector: new Vec3(0, -1, 0) },
@@ -65,27 +96,46 @@ export function registerBlockTools(factory: ToolFactory, getBot: () => mineflaye
 
       for (const face of possibleFaces) {
         const referencePos = placePos.plus(face.vector);
-        const referenceBlock = bot.blockAt(referencePos);
+        let referenceBlock = bot.blockAt(referencePos);
 
-        if (referenceBlock && referenceBlock.name !== 'air') {
-          if (!bot.canSeeBlock(referenceBlock)) {
+        if (referenceBlock && referenceBlock.boundingBox === 'block' && !canReplaceForPlacement(referenceBlock)) {
+          const withinReach = () => {
+            const eye = eyePosition(bot);
+            return eye.distanceTo(closestPoint(eye, referencePos, referencePos.offset(1, 1, 1))) <=
+              (bot.game.gameMode === 'creative' ? 5 : 4.5);
+          };
+          if (!bot.canSeeBlock(referenceBlock) || !withinReach()) {
             const goal = new goals.GoalNear(referencePos.x, referencePos.y, referencePos.z, 2);
             await safeGoto(bot, goal);
           }
 
+          const currentTarget = bot.blockAt(placePos);
+          if (!currentTarget || currentTarget.stateId !== originalState || currentTarget.type !== originalType ||
+              !canReplaceForPlacement(currentTarget)) throw new Error('Placement target changed during approach; inspect before retrying');
+          const botNow = bot.entity.position.floored();
+          if (placePos.equals(botNow) || placePos.equals(botNow.offset(0, 1, 0))) throw new Error("You can't place a block where you're standing or one block above");
+          referenceBlock = bot.blockAt(referencePos);
+          if (!referenceBlock || referenceBlock.boundingBox !== 'block' || canReplaceForPlacement(referenceBlock) ||
+              !withinReach() || !bot.canSeeBlock(referenceBlock)) throw new Error('Reference block is inaccessible after safe approach');
+          if (bot.heldItem?.name !== heldName) throw new Error('Held block item changed during approach; equip it again before retrying');
           await bot.lookAt(placePos, true);
 
           try {
             await bot.placeBlock(referenceBlock, face.vector.scaled(-1));
-            return factory.createResponse(`Placed block at (${x}, ${y}, ${z}) using ${face.direction} face`);
           } catch (placeError) {
-            log('warn', `Failed to place using ${face.direction} face: ${placeError}`);
-            continue;
+            const observed = bot.blockAt(placePos);
+            throw new Error(`Native placement failed: ${String(placeError)}; target now ${observed?.name ?? 'unloaded'}. Possible partial effects are not rolled back; inspect before retrying`);
           }
+          const placed = bot.blockAt(placePos);
+          if (!placed || !expectedNames.includes(placed.name) ||
+              (placed.type === originalType && placed.stateId === originalState)) {
+            throw new Error(`Placement not confirmed at intended target (${x}, ${y}, ${z}): expected ${expectedNames.join(' or ')}, observed ${placed?.name ?? 'unloaded'}. Inspect before retrying`);
+          }
+          return factory.createResponse(`Placed ${placed.name} at (${x}, ${y}, ${z}) using ${face.direction} face`);
         }
       }
 
-      return factory.createResponse(`Failed to place block at (${x}, ${y}, ${z}): No suitable reference block found`);
+      throw new Error(`Failed to place block at (${x}, ${y}, ${z}): No suitable reference block found`);
     }
   );
 

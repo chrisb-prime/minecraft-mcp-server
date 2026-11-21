@@ -19,6 +19,7 @@ import { registerCraftingTools } from './tools/crafting-tools.js';
 import { registerFurnaceTools } from './tools/furnace-tools.js';
 import { registerSurvivalTools } from './tools/survival-tools.js';
 import { registerInteractionTools } from './tools/interaction-tools.js';
+import { registerStorageTools } from './tools/storage-tools.js';
 
 setupStdioFiltering();
 
@@ -63,6 +64,7 @@ async function main() {
   registerFurnaceTools(factory, getBot);
   registerSurvivalTools(factory, getBot);
   registerInteractionTools(factory, getBot);
+  registerStorageTools(factory, getBot);
 
   process.stdin.on('end', () => {
     connection.cleanup();
