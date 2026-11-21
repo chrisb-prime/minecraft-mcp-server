@@ -107,15 +107,18 @@ export function registerInventoryTools(factory: ToolFactory, getBot: () => minef
     "equip-item",
     "Equip a specific item",
     {
-      itemName: z.string().describe("Name of the item to equip"),
+      itemName: z.string().trim().min(1).describe("Exact item name preferred; unique substring accepted"),
       destination: z.string().optional().describe("Where to equip the item (default: 'hand')")
     },
     async ({ itemName, destination = 'hand' }) => {
       const bot = getBot();
       const items = bot.inventory.items();
-      const item = items.find((item) =>
-        item.name.includes(itemName.toLowerCase())
-      );
+      const name = itemName.toLowerCase();
+      const exact = items.find(item => item.name === name);
+      const matches = exact ? [exact] : items.filter(item => item.name.includes(name));
+      const names = [...new Set(matches.map(item => item.name))].sort();
+      if (names.length > 1) throw new Error(`Ambiguous item '${itemName}': ${names.join(', ')}; use an exact item name`);
+      const item = matches[0];
 
       if (!item) {
         return factory.createResponse(`Couldn't find any item matching '${itemName}' in inventory`);
