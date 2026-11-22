@@ -2,6 +2,7 @@ import { z } from "zod";
 import mineflayer from 'mineflayer';
 import { ToolFactory } from '../tool-factory.js';
 import { requireAwake } from './interaction-utils.js';
+import { cursorSnapshot, recoverCursor, syncInventory, withInventoryOperation } from './cursor-utils.js';
 
 interface InventoryItem {
   name: string;
@@ -10,6 +11,21 @@ interface InventoryItem {
 }
 
 export function registerInventoryTools(factory: ToolFactory, getBot: () => mineflayer.Bot): void {
+  factory.registerTool('inventory-cursor-status', 'Request a server-confirmed player inventory and carried cursor snapshot; does not move items', {}, async () => {
+    const bot = getBot();
+    return withInventoryOperation(bot, async () => {
+      await syncInventory(bot);
+      return factory.createResponse(JSON.stringify({ serverConfirmed: true, ...cursorSnapshot(bot) }));
+    });
+  });
+  factory.registerTool('recover-inventory-cursor', 'Move the entire server-confirmed cursor stack into compatible player inventory slots; never drops items', {}, async () => {
+    const bot = getBot();
+    requireAwake(bot);
+    return withInventoryOperation(bot, async () => {
+      const recovered = await recoverCursor(bot);
+      return factory.createResponse(JSON.stringify({ recovered, serverConfirmed: true, ...cursorSnapshot(bot) }));
+    });
+  });
   let dropping = false;
   factory.registerTool(
     "drop-item",

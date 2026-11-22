@@ -68,10 +68,18 @@ export function registerSurvivalTools(factory: ToolFactory, getBot: () => Bot): 
     return factory.createResponse('Bot is awake');
   });
 
-  factory.registerTool('status', 'Report survival stats and current bot state as JSON', {}, async () => {
+  factory.registerTool('status', 'Report survival stats, worn armor, both hands and current bot state as JSON (local snapshot)', {}, async () => {
     const bot = getBot();
     const vehicle = getVehicle(bot);
     const available = (value: number) => Number.isFinite(value) ? value : null;
+    const equipmentItem = (destination: Parameters<Bot['getEquipmentDestSlot']>[0]) => {
+      const slot = bot.getEquipmentDestSlot(destination);
+      if (!Number.isInteger(slot) || slot < 0 || slot >= bot.inventory.slots.length) {
+        throw new Error(`Equipment slot unavailable for ${destination}`);
+      }
+      const item = bot.inventory.slots[slot];
+      return item ? { name: item.name, count: item.count, slot } : null;
+    };
     return factory.createResponse(JSON.stringify({
       username: bot.username,
       version: bot.version,
@@ -87,6 +95,15 @@ export function registerSurvivalTools(factory: ToolFactory, getBot: () => Bot): 
       dimension: bot.game.dimension,
       timeOfDay: bot.time.timeOfDay,
       heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
+      equipment: {
+        head: equipmentItem('head'),
+        torso: equipmentItem('torso'),
+        legs: equipmentItem('legs'),
+        feet: equipmentItem('feet'),
+        mainHand: equipmentItem('hand'),
+        offHand: bot.supportFeature('doesntHaveOffHandSlot') ? null : equipmentItem('off-hand'),
+        serverConfirmed: false
+      },
       usingHeldItem: bot.usingHeldItem,
       vehicle: vehicle ? { id: vehicle.id, name: vehicle.name ?? vehicle.type } : null,
       openWindow: bot.currentWindow ? { id: bot.currentWindow.id, type: bot.currentWindow.type } : null,

@@ -16,7 +16,7 @@ import { ToolFactory } from '../src/tool-factory.js';
 import { registerBlockTools } from '../src/tools/block-tools.js';
 import { registerPositionTools } from '../src/tools/position-tools.js';
 
-function setup() {
+function setup(version = '1.21.11') {
   const block = {
     name: 'oak_log', type: 1, stateId: 1, position: new Vec3(4, 64, 0), diggable: true,
     canHarvest: sinon.stub().returns(true),
@@ -25,7 +25,7 @@ function setup() {
   const stone = { name: 'stone_axe', type: 2, enchants: [] };
   const iron = { name: 'iron_axe', type: 3, enchants: [] };
   const bot = {
-    registry: minecraftData('1.21.11'),
+    registry: minecraftData(version),
     game: { gameMode: 'survival' }, heldItem: { name: 'dirt' },
     entity: { position: new Vec3(0, 64, 0), effects: [], width: 0.6, height: 1.8 },
     world: { raycast: sinon.stub().returns(block) },
@@ -164,10 +164,11 @@ test('placement fails on unreachable approach without placing or digging', async
   t.false(bot.dig.called);
 });
 
-test('actual 1.21.11 open-door shapes permit forward waypoints while closed doors stay blocked', t => {
-  const data = minecraftData('1.21.11');
+for (const version of ['1.21.11', '26.1']) {
+test(`actual ${version} open-door shapes permit forward waypoints while closed doors stay blocked`, t => {
+  const data = minecraftData(version);
   const loadBlock = createRequire(import.meta.url)('prismarine-block') as (version: string) => typeof Block;
-  const BlockClass = loadBlock('1.21.11');
+  const BlockClass = loadBlock(version);
   const definition = data.blocksByName.oak_door;
   for (const open of [false, true]) {
     for (const facing of ['north', 'south', 'east', 'west']) {
@@ -186,7 +187,7 @@ test('actual 1.21.11 open-door shapes permit forward waypoints while closed door
         };
         const lower = door('lower', 64);
         const upper = door('upper', 65);
-        const { bot } = setup();
+        const { bot } = setup(version);
         bot.blockAt.callsFake(position => {
           if (position.equals(lower.position)) return lower;
           if (position.equals(upper.position)) return upper;
@@ -239,6 +240,7 @@ test('actual 1.21.11 open-door shapes permit forward waypoints while closed door
     }
   }
 });
+}
 
 test('dig uses an exposed face without undoing a usable position when the center ray is occluded', async t => {
   const { bot, block, call } = setup();

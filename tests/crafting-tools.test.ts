@@ -257,10 +257,12 @@ test('craft-item crafts successfully when ingredients are available', async (t) 
   const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
   const factory = new ToolFactory(mockServer, mockConnection);
 
-  const craftStub = sinon.stub().resolves();
+  const craftStub = sinon.stub().callsFake(async () => { inventoryItems.push({ name: 'stick', count: 4, slot: 9 }); });
   const mockBot = {
     version: '1.21.8',
-    inventory: { items: () => inventoryItems },
+    supportFeature: () => true,
+    _syncWindow: sinon.stub().resolves(),
+    inventory: { items: () => inventoryItems, selectedItem: null, slots: Array(46).fill(null), inventoryStart: 9, inventoryEnd: 45 },
     craft: craftStub
   } as unknown as mineflayer.Bot;
 

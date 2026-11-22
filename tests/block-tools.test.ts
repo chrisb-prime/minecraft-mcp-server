@@ -322,9 +322,9 @@ test('find-blocks clamps oversized count before calling bot.findBlocks', async (
   t.is(findBlocksArgs.count, 256);
 });
 
-function setupPlacement(name = 'fern', stateOffset = 0) {
-  const data = minecraftData('1.21.11');
-  const BlockClass = (createRequire(import.meta.url)('prismarine-block') as (version: string) => typeof Block)('1.21.11');
+function setupPlacement(name = 'fern', stateOffset = 0, version = '1.21.11') {
+  const data = minecraftData(version);
+  const BlockClass = (createRequire(import.meta.url)('prismarine-block') as (version: string) => typeof Block)(version);
   const targetPos = new Vec3(331, 63, -226);
   const blocks = new Map<string, Block>();
   const put = (name: string, position = targetPos, stateOffset = 0) => {
@@ -357,12 +357,21 @@ function setupPlacement(name = 'fern', stateOffset = 0) {
   return { bot, call, put, target, targetPos, reference };
 }
 
-test('native placement replaces one-layer snow and simple replaceable plants at the explicit target without digging', async t => {
+for (const version of ['1.21.11', '26.1']) {
+test(`native ${version} placement replaces one-layer snow and simple replaceable plants at the explicit target without digging`, async t => {
   const injectPlacement = createRequire(import.meta.url)('mineflayer/lib/plugins/place_block.js') as (bot: mineflayer.Bot) => void;
   for (const name of ['fern', 'snow', 'short_grass', 'dead_bush', 'air', 'cave_air']) {
-    const { bot, call, put, reference, targetPos } = setupPlacement(name);
-    const native = Object.assign(new EventEmitter(), {
-      blockAt: bot.blockAt, _genericPlace: sinon.stub().callsFake(async () => { put('oak_fence'); })
+    const { bot, call, put, reference, targetPos } = setupPlacement(name, 0, version);
+    const events = new EventEmitter();
+    const native = Object.assign(events, {
+      blockAt: bot.blockAt, _genericPlace: sinon.stub().callsFake(async () => {
+        setImmediate(() => {
+          const oldBlock = bot.blockAt(targetPos);
+          const placed = put('oak_fence');
+          events.emit(`blockUpdate:${reference.position}`, reference, reference);
+          events.emit(`blockUpdate:${targetPos}`, oldBlock, placed);
+        });
+      })
     }) as unknown as mineflayer.Bot;
     injectPlacement(native);
     bot.placeBlock.callsFake((reference: Block, face: Vec3) => native.placeBlock(reference, face));
@@ -377,6 +386,7 @@ test('native placement replaces one-layer snow and simple replaceable plants at 
     t.false(bot.pathfinder.goto.called);
   }
 });
+}
 
 test('placement does not blanket-replace empty shapes, solids, liquids or thicker snow', async t => {
   for (const [name, offset] of [
@@ -458,24 +468,31 @@ test('replacement requires a loaded target, a block item, normal reach and a usa
   }
 });
 
-test('ordinary seed and food-crop planting into air above farmland uses native placement and confirms the crop block', async t => {
+for (const version of ['1.21.11', '26.1']) {
+test(`ordinary ${version} seed and food-crop planting into air above farmland uses native placement and confirms the crop block`, async t => {
   const injectPlacement = createRequire(import.meta.url)('mineflayer/lib/plugins/place_block.js') as (bot: mineflayer.Bot) => void;
   for (const [held, crop] of [
     ['wheat_seeds', 'wheat'], ['beetroot_seeds', 'beetroots'], ['carrot', 'carrots'],
     ['potato', 'potatoes'], ['melon_seeds', 'melon_stem'], ['pumpkin_seeds', 'pumpkin_stem'],
     ['torchflower_seeds', 'torchflower_crop'], ['pitcher_pod', 'pitcher_crop']
   ] as const) {
-    const { bot, call, put, reference, targetPos } = setupPlacement('air');
+    const { bot, call, put, reference, targetPos } = setupPlacement('air', 0, version);
     t.truthy(bot.registry.itemsByName[held]);
     t.truthy(bot.registry.blocksByName[crop]);
     bot.heldItem.name = held;
     const farmland = put('farmland', reference.position);
-    const native = Object.assign(new EventEmitter(), {
+    const events = new EventEmitter();
+    const native = Object.assign(events, {
       blockAt: bot.blockAt,
       _genericPlace: sinon.stub().callsFake(async (clicked: Block, face: Vec3) => {
         t.is(clicked.name, 'farmland');
         t.true(clicked.position.plus(face).equals(targetPos));
-        put(crop);
+        setImmediate(() => {
+          const oldBlock = bot.blockAt(targetPos);
+          const planted = put(crop);
+          events.emit(`blockUpdate:${farmland.position}`, farmland, farmland);
+          events.emit(`blockUpdate:${targetPos}`, oldBlock, planted);
+        });
       })
     }) as unknown as mineflayer.Bot;
     injectPlacement(native);
@@ -490,6 +507,7 @@ test('ordinary seed and food-crop planting into air above farmland uses native p
     t.false(bot.pathfinder.goto.called);
   }
 });
+}
 
 test('ordinary non-farmland planting confirms the native plant alias without loosening replacement policy', async t => {
   for (const [held, planted] of [
