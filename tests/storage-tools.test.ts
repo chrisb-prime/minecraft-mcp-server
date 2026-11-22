@@ -22,7 +22,11 @@ function item(name: string, count: number): Item {
   return new Items(registry.itemsByName[name].id, count);
 }
 
-function setup(double: boolean | 'hopper' = false) {
+function setup(double: boolean | 'hopper' = false, version = '1.21.11') {
+  const Items = (require('prismarine-item') as (version: string) => typeof Item)(version);
+  const windows = (require('prismarine-windows') as (version: string) => {
+    createWindow(id: number, type: string, title: string): Chest;
+  })(version);
   const events = new EventEmitter();
   const chest = windows.createWindow(1, double === 'hopper' ? 'minecraft:hopper' : double ? 'minecraft:generic_9x6' : 'minecraft:generic_9x3', 'Storage');
   const block = { name: double === 'hopper' ? 'hopper' : 'chest', position: new Vec3(2, 64, 0) } as Block;
@@ -381,11 +385,15 @@ for (const deposit of [true, false]) {
   });
 }
 
-test.serial('native hopper withdrawal into a partial player stack does not misclassify pickup/return as automation', async t => {
-  const { bot, chest, transfer } = setup('hopper');
+for (const version of ['1.21.11', '26.1']) {
+test.serial(`native ${version} hopper withdrawal into a partial player stack does not misclassify pickup/return as automation`, async t => {
+  const { bot, chest, transfer } = setup('hopper', version);
+  const registry = minecraftData(version);
+  const Items = (require('prismarine-item') as (version: string) => typeof Item)(version);
+  const item = (name: string, count: number) => new Items(registry.itemsByName[name].id, count);
   const client = Object.assign(new EventEmitter(), { write: sinon.stub() });
   const native = Object.assign(new EventEmitter(), {
-    version: '1.21.11', registry, _client: client, supportFeature: registry.supportFeature,
+    version, registry, _client: client, supportFeature: registry.supportFeature,
     game: { gameMode: 'survival' }, entity: { position: new Vec3(0, 64, 0), height: 1.8 }
   }) as unknown as Bot;
   (require('mineflayer/lib/plugins/inventory.js') as (bot: Bot, options: { hideErrors: boolean }) => void)(native, { hideErrors: true });
@@ -400,6 +408,7 @@ test.serial('native hopper withdrawal into a partial player stack does not miscl
   t.is(chest.slots[0]!.count, 59);
   t.is(chest.selectedItem, null);
 });
+}
 
 test.serial('generic tools allow only normal chests/hoppers and legacy chest tools remain chest-only', async t => {
   for (const name of ['container-status', 'deposit-container', 'withdraw-container']) {

@@ -1,5 +1,8 @@
 import test from 'ava';
 import sinon from 'sinon';
+import { createRequire } from 'node:module';
+import minecraftData from 'minecraft-data';
+import type { Item } from 'prismarine-item';
 import type { Bot } from 'mineflayer';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { BotConnection } from '../src/bot-connection.js';
@@ -23,7 +26,10 @@ function setup() {
     entity: { id: 1, position: new Vec3(0, 64, 0), height: 1.8, onGround: true, isValid: true },
     entities: { 42: entity },
     vehicle: null as typeof entity | null,
-    inventory: { items: sinon.stub().returns([{ name: 'bread', count: 2, type: 1 }]) },
+    inventory: { items: sinon.stub().returns([{ name: 'bread', count: 2, type: 1 }]), slots: Array<Item | null>(46).fill(null) },
+    quickBarSlot: 0,
+    supportFeature: minecraftData('1.21.11').supportFeature,
+    getEquipmentDestSlot: (_destination: Parameters<Bot['getEquipmentDestSlot']>[0]): number => -1,
     heldItem: { name: 'bread', count: 2 },
     currentWindow: null as { id: number; type: string } | null,
     targetDigBlock: null,
@@ -43,6 +49,9 @@ function setup() {
     nearestEntity: sinon.stub().returns(entity),
     world: { raycast: sinon.stub().returns(null) }
   };
+  const equip = bot.equip;
+  (createRequire(import.meta.url)('mineflayer/lib/plugins/simple_inventory.js') as (bot: Bot) => void)(bot as unknown as Bot);
+  bot.equip = equip;
   const tool = sinon.stub();
   const connection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) };
   const factory = new ToolFactory({ tool } as unknown as McpServer, connection as unknown as BotConnection);
@@ -162,6 +171,53 @@ test('status exposes survival and current state with unavailable saturation as n
   t.is(state.vehicle.id, 42);
   t.is(state.openWindow.type, 'minecraft:chest');
   t.deepEqual(state.position, { x: 0, y: 64, z: 0 });
+  t.deepEqual(state.equipment, { head: null, torso: null, legs: null, feet: null,
+    mainHand: null, offHand: null, serverConfirmed: false });
+});
+
+test('26.1 status reads actual worn copper armor and both hands using native slots, not loose item search', async t => {
+  const { bot, call } = setup();
+  bot.version = '26.1';
+  const Items = (createRequire(import.meta.url)('prismarine-item') as (version: string) => typeof Item)('26.1');
+  const data = minecraftData('26.1');
+  const item = (name: string, count = 1) => new Items(data.itemsByName[name].id, count);
+  for (const [slot, name] of [[5, 'copper_helmet'], [6, 'copper_chestplate'],
+    [7, 'copper_leggings'], [8, 'copper_boots'], [45, 'shield']] as const) {
+    bot.inventory.slots[slot] = item(name);
+  }
+  bot.quickBarSlot = 3;
+  bot.inventory.slots[39] = item('torch', 12);
+  bot.inventory.slots[9] = item('iron_helmet');
+  bot.currentWindow = { id: 2, type: 'minecraft:chest' };
+  const before = bot.inventory.slots.slice();
+  const state = JSON.parse((await call('status')).content[0].text);
+  t.deepEqual(state.equipment, {
+    head: { name: 'copper_helmet', count: 1, slot: 5 },
+    torso: { name: 'copper_chestplate', count: 1, slot: 6 },
+    legs: { name: 'copper_leggings', count: 1, slot: 7 },
+    feet: { name: 'copper_boots', count: 1, slot: 8 },
+    mainHand: { name: 'torch', count: 12, slot: 39 },
+    offHand: { name: 'shield', count: 1, slot: 45 },
+    serverConfirmed: false
+  });
+  t.deepEqual(state.heldItem, { name: 'bread', count: 2 });
+  t.deepEqual(bot.inventory.slots, before);
+  t.false(bot.inventory.items.called);
+  t.false(bot.equip.called);
+});
+
+test('status reflects removal and hotbar changes, and fails rather than inventing empty equipment on invalid native slots', async t => {
+  const { bot, call } = setup();
+  bot.quickBarSlot = 8;
+  bot.inventory.slots[44] = { name: 'stick', count: 4 } as Item;
+  t.deepEqual(JSON.parse((await call('status')).content[0].text).equipment.mainHand,
+    { name: 'stick', count: 4, slot: 44 });
+  bot.inventory.slots[44] = null;
+  t.is(JSON.parse((await call('status')).content[0].text).equipment.mainHand, null);
+  bot.getEquipmentDestSlot = () => 100;
+  const result = await call('status');
+  t.true(result.isError);
+  t.regex(result.content[0].text, /Equipment slot unavailable/);
 });
 
 test('find-entity supplies a usable ID for interaction and mounting', async t => {

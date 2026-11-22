@@ -2,8 +2,10 @@ import mineflayer from 'mineflayer';
 import pathfinderPkg from 'mineflayer-pathfinder';
 const { pathfinder } = pathfinderPkg;
 import { initializeSafeNavigation } from './safe-navigation.js';
+import { trackVillagerProfessions } from './tools/villager-tools.js';
+import { trackStonecutterRecipes } from './tools/stonecutter-tools.js';
 
-const SUPPORTED_MINECRAFT_VERSION = '1.21.11';
+const SUPPORTED_MINECRAFT_VERSION = mineflayer.latestSupportedVersion;
 
 type ConnectionState = 'connected' | 'connecting' | 'disconnected';
 
@@ -54,7 +56,7 @@ export class BotConnection {
       host: this.config.host,
       port: this.config.port,
       username: this.config.username,
-      plugins: { pathfinder },
+      plugins: { pathfinder, villagerProfessions: trackVillagerProfessions, stonecutterRecipes: trackStonecutterRecipes },
     };
 
     this.bot = mineflayer.createBot(botOptions);

@@ -3,6 +3,8 @@ import mineflayer from 'mineflayer';
 import minecraftData from 'minecraft-data';
 import { ToolFactory } from '../tool-factory.js';
 import { log } from '../logger.js';
+import { cursorSnapshot, recoverCursor, syncInventory, withInventoryOperation } from './cursor-utils.js';
+import { craftInventoryOnce, verifiedInventoryRecipe } from './inventory-crafting.js';
 
 interface RecipeIngredient {
   name: string;
@@ -407,6 +409,12 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
       const outputQuery = normalizeItemName(outputItem);
 
       const bot = getBot();
+      return withInventoryOperation(bot, async () => {
+      await syncInventory(bot);
+      if (bot.inventory.selectedItem) throw new Error('Inventory cursor is occupied; inspect/recover it before crafting');
+      if (bot.inventory.slots.slice(1, 5).some(Boolean)) {
+        throw new Error(`Player crafting grid contains residual inputs; no new craft attempted; snapshot ${JSON.stringify(cursorSnapshot(bot))}`);
+      }
       const mcData = minecraftData(bot.version);
       const itemsById = (mcData as unknown as { items: McDataItemsById }).items;
       const recipes = getAllRecipes(mcData);
@@ -444,11 +452,29 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
           }
 
           try {
+            const before = bot.inventory.items().filter(item => item.name === candidate.resultName)
+              .reduce((total, item) => total + item.count, 0);
+            const stackSize = mcData.itemsByName[candidate.resultName]?.stackSize;
+            const emptySlots = bot.inventory.slots.slice(bot.inventory.inventoryStart, bot.inventory.inventoryEnd)
+              .filter(item => !item).length;
+            if (!stackSize || emptySlots * stackSize < candidate.resultCount) {
+              throw new Error('Reserve empty inventory capacity for crafting output before consuming ingredients');
+            }
             if (candidate.craftingTable) {
               await bot.craft(candidate.recipe as Parameters<typeof bot.craft>[0], 1, candidate.craftingTable as Parameters<typeof bot.craft>[2]);
+            } else if (bot.version === '26.1' && verifiedInventoryRecipe(candidate.recipe)) {
+              await craftInventoryOnce(bot, candidate.recipe);
             } else {
               await bot.craft(candidate.recipe as Parameters<typeof bot.craft>[0], 1);
             }
+            await syncInventory(bot);
+            if (bot.inventory.selectedItem) await recoverCursor(bot);
+            if (bot.inventory.slots.slice(1, 5).some(Boolean)) {
+              throw new Error('Player crafting grid still contains inputs after native crafting; inspect before spending more materials');
+            }
+            const gained = bot.inventory.items().filter(item => item.name === candidate.resultName)
+              .reduce((total, item) => total + item.count, 0) - before;
+            if (gained !== candidate.resultCount) throw new Error(`Craft output not confirmed in accessible inventory: expected ${candidate.resultCount}, gained ${gained}`);
             craftedCount++;
             craftedThisAttempt = true;
             log('info', `Crafted ${candidate.resultName}`);
@@ -456,6 +482,7 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
           } catch (err) {
             lastError = err instanceof Error ? err.message : String(err);
             log('warn', `Failed to craft ${outputItem}: ${lastError}`);
+            return factory.createErrorResponse(`Failed to craft ${outputItem}: ${lastError}; confirmed ${craftedCount}/${amount} craft(s); snapshot ${JSON.stringify(cursorSnapshot(bot))}. Possible partial effects; no recipe retry or rollback`);
           }
         }
 
@@ -467,6 +494,7 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
         }
 
         if (!craftedThisAttempt) {
+          lastError = bestCannotCraft?.message ?? lastError;
           break;
         }
       }
@@ -474,8 +502,12 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
       if (craftedCount === 0) {
         return factory.createErrorResponse(`Failed to craft ${outputItem}: ${lastError || "Missing ingredients or recipe not found"}`);
       }
+      if (craftedCount !== amount) {
+        return factory.createErrorResponse(`Only confirmed ${craftedCount}/${amount} craft(s) of ${outputItem}; ${lastError || 'Missing ingredients'}. Partial effects are not rolled back`);
+      }
 
       return factory.createResponse(`Successfully crafted ${outputItem} ${craftedCount} time(s)`);
+      });
     }
   );
 
